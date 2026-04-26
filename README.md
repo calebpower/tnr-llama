@@ -155,5 +155,6 @@ find helpful.
 |:--------------------|:--------------------------------------------------------------------------------------------------|
 | tnr-launch          | Start the server instance, launch `llama-server`, and forward the port.                           |
 | tnr-destroy         | Kill the server instance.                                                                         |
-| tnr-script-restart  | Restart the supervisor and llama instance, but don't actually restart the server instance itself. |
 | tnr-status          | Figure out where we're at in the launch workflow.                                                 |
+| tnr-script-restart  | Restart the supervisor and llama instance, but don't actually restart the server instance itself. |
+| tnr-reconnect       | Reconnect to the server, if it's alive.                                                           |

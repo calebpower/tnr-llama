@@ -298,6 +298,38 @@ and establishes an SSH tunnel."
             (message "tnr-llama: Launch initiated. Polling status in the background...")))))))
 
 ;;;###autoload
+(defun tnr-llama-reconnect ()
+  "Reconnect the SSH tunnel to the tnr-llama server.
+Useful if Emacs was restarted but the remote server is still running."
+  (interactive)
+  (let* ((servers (tnr-llama--get-servers))
+         (existing (car servers)))
+    (if (not existing)
+        (message "tnr-llama: No server found to reconnect to.")
+      (let ((ip (alist-get 'ip existing))
+            (status (alist-get 'status existing))
+            (ssh-port (or (alist-get 'port existing) 22)))
+        (if (not (string= status "RUNNING"))
+            (message "tnr-llama: Server is not RUNNING (status: %s). Cannot reconnect tunnel." status)
+          (if (not ip)
+              (message "tnr-llama: Server is RUNNING but no IP address was found.")
+            (message "tnr-llama: Re-establishing SSH tunnel to %s:%s..." ip ssh-port)
+            
+            ;; Clean up the old tunnel process if it exists
+            (when (process-live-p tnr-llama--tunnel-process)
+              (kill-process tnr-llama--tunnel-process))
+            
+            ;; Start a fresh tunnel
+            (let ((ssh-args (delq nil 
+                                  (list "ssh" "-p" (format "%s" ssh-port) "-N" "-L" (format "%d:localhost:%d" tnr-llama-port tnr-llama-port)
+                                        "-o" "StrictHostKeyChecking=accept-new" "-o" "BatchMode=yes"
+                                        (when tnr-llama-ssh-key "-i")
+                                        (when tnr-llama-ssh-key (expand-file-name tnr-llama-ssh-key))
+                                        (format "%s@%s" tnr-llama-ssh-user ip)))))
+              (setq tnr-llama--tunnel-process (apply #'start-process "tnr-llama-tunnel" "*tnr-llama-tunnel*" ssh-args))
+              (message "tnr-llama: Tunnel reconnected on port %d!" tnr-llama-port))))))))
+
+;;;###autoload
 (defun tnr-llama-destroy ()
   "Destroy all tnr-llama servers matching the configured snapshot and kill the tunnel."
   (interactive)

@@ -1,0 +1,63 @@
+# =========================
+# Emacs Lisp Packaging
+# =========================
+*-pkg.el
+*.tar
+
+# =========================
+# Editors
+# =========================
+
+# Emacs
+*.elc
+*~
+\#*\#
+.\#*
+/.emacs.desktop
+/.emacs.desktop.lock
+auto-save-list/
+tramp/
+
+# Nano
+*.save
+*.save.*
+
+# =========================
+# Operating Systems
+# =========================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.cab
+*.msi
+*.msm
+*.msp
+*.lnk
+$RECYCLE.BIN/
+
+# Linux
+.directory
+.Trash-*
+.nfs*
+.fuse_hidden*
+
+# FreeBSD
+.obj
+.core

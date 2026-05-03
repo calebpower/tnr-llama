@@ -136,14 +136,11 @@ Consult the following table for different values you can configure.
 | tnr-llama-remote-script  | string | Specifies the path to the remote script to launch on instance startup. |
 | tnr-llama-port           | int    | Specifies the port on which llama should be exposed. Defaults to `8080`. |
 | tnr-llama-ssh-user       | string | Specifies the SSH user for dispatching commands to the remote server. |
-| tnr-llama-ssh-key        | string | Specifies the local path to the SSH private key. |
-| tnr-llama-ssh-id         | string | Specifies the name of the SSH key, as configured in Thunder Compute. |
 | tnr-llama-idle-grace     | int    | Specifies the number of seconds before the remote server should self-destruct when idle. |
 
-So, one thing that you ought to do before running this thing is to make sure that
-you've added your SSH public key to Thunder Compute's online portal, and given it
-a snazzy name. Your Emacs script will need to know it so that the key can be
-authorized and so the tunnel can be established.
+Thunder Compute seems to prefer that folks use their auto-generated SSH keys,
+so this package will pull the appropriate privkey from the output of the
+`tnr create` command.
 
 ## Usage
 

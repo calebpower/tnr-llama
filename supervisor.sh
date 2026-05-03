@@ -16,16 +16,16 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 IDLE_GRACE=${1:-600}
+PORT=${2:-8080}
+SNAPSHOT=${3:-deepseek}
 
-TAG=2.0.55
+TAG=2.0.59
 TARBALL=https://github.com/Thunder-Compute/thunder-cli/releases/download/v${TAG}/tnr_${TAG}_linux_amd64.tar.gz
 BINDIR=~/.local/bin
 TNR=${BINDIR}/tnr
 LLAMA=/home/ubuntu/llama.cpp/build/bin/llama-server
 MODEL=/home/ubuntu/models/DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf
-MODEL_EPHEMERAL=/ephemeral/DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf
 LOG=/tmp/llama.log
-SNAPSHOT=deepseek_r4
 
 mkdir -p $BINDIR
 
@@ -39,19 +39,14 @@ else
   printf '> tnr is up to date (v%s)\n' $TAG
 fi
 
-if [ ! -f $MODEL_EPHEMERAL ]; then
-  printf '> copying model to ephemeral disk\n'
-  cp $MODEL $MODEL_EPHEMERAL
-fi
-
 pid="$(ps -eo pid,args | sed -n -e '/[l]lama-server/{ s/^[[:space:]]*\([0-9][0-9]*\).*/\1/p; q; }' -e '$ s/.*/-1/p')"
 
-if [ "-1" == "${pid}" ]; then
+if [ "-1" = "${pid}" ]; then
   printf '> launching llama... '
   nohup $LLAMA \
-      -m $MODEL_EPHEMERAL \
+      -m $MODEL \
       --host 127.0.0.1 \
-      --port 8080 \
+      --port $PORT \
       -ngl 99 \
       -t 32 \
       --mlock \
@@ -71,32 +66,24 @@ while true; do
 
   printf '> checking on llama (request sent %s)... ' "$(date '+%Y-%m-%d %H:%M')"
 
-  res="$(curl -s http://localhost:8080/v1/chat/completions \
+  res="$(curl -s -w "\n%{http_code}" http://localhost:${PORT}/v1/chat/completions \
       -H "Content-Type: application/json" \
       -d '{"model": "deepseek", "messages": [{"role": "user", "content": "Are you ready to get to work?"}], "temperature": 0.4}')"
   if [ "$?" != "0" ]; then
     printf 'still waiting (api not ready)\n'
   else
-    if [ "false" == "$(printf '%s' "$res" | jq -r 'has(".error")')" ]; then
-      printf 'ready! (port 8080)\n'
+    http_code=$(printf '%s' "$res" | tail -n1)
+    body=$(printf '%s' "$res" | head -n -1)
+
+    if [ "$http_code" = "200" ]; then
+      printf 'ready! (port %s)\n' "$PORT"
       touch /tmp/llama.ready
       break
-    fi
-
-    error="$(printf '%s' "$res" | jq -rc '.error')"
-    if [ "null" == "error" ]; then
-      printf 'ready! (port 8080)\n'
-      touch /tmp/llama.ready
-      break
-    fi
-
-    error="$(printf '%s' "$res" | jq -rc '.error.type')"
-    if [ "unavailable_error" == "$error" ]; then
+    elif [ "$http_code" = "503" ]; then
       printf 'still waiting (model not ready)\n'
     else
-      printf 'uh-oh!\n> unexpected llama error: %s\n' "$(echo $error | jq -rc '.message')"
+      printf 'uh-oh!\n> unexpected llama error: (HTTP %s): %s\n' "$http_code" "$body"
     fi
-
   fi
   sleep 10
 done
@@ -117,12 +104,12 @@ while true; do
 
     if [ "$idle_time" -ge "$IDLE_GRACE" ]; then
       printf '> llm has been idle for %d seconds (limit: %d). shutting down...\n' "$idle_time" "$IDLE_GRACE"
-      instance_id=$(tnr status --json 2>/dev/null | jq -rc 'first(.[] | select(.template == "'"$SNAPSHOT"'") | .id)')
-      if [ "" == "$instance_id" ]; then
+      instance_id=$($TNR status --json 2>/dev/null | jq -rc 'first(.[] | select(.template == "'"$SNAPSHOT"'") | .id)')
+      if [ -z "$instance_id" ] || [ "$instance_id" = "null" ]; then
         printf '> err: missing instance identifier\n' 1>&2
       else
         printf '> shutting down instance %s\n' "$instance_id"
-        tnr delete $instance_id
+        $TNR delete $instance_id -y
       fi
     else
       printf '> llm is active (idle for %d seconds, checked %s)\n' "$idle_time" "$(date '+%Y-%m-%d %H:%M')"

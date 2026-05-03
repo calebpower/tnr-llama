@@ -16,7 +16,7 @@
 ;; along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 ;; Author: Axonibyte Innovations, LLC
-;; Version: 0.1.0
+;; Version: 0.1.1
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: tools, processes, external
 ;; URL: https://github.com/yourusername/tnr-llama
@@ -82,21 +82,17 @@
   "The SSH username used to connect to the remote server."
   :type 'string)
 
-(defcustom tnr-llama-ssh-key nil
-  "Path to the private SSH key (e.g., \"~/.ssh/id_rsa\").
-If nil, SSH will rely on its default key lookup or agent."
-  :type '(choice (const :tag "None" nil) string))
-
-(defcustom tnr-llama-ssh-id nil
-  "The ID of the SSH key to inject into the tnr server during creation.
-If nil, no --ssh-key argument is passed to 'tnr create'."
-  :type '(choice (const :tag "None" nil) string))
-
 (defcustom tnr-llama-idle-grace 600
   "Number of seconds the LLaMA server can be idle before the supervisor terminates it."
   :type 'integer)
 
 ;;; Internal Variables
+
+(defvar tnr-llama--ephemeral-key nil
+  "In-memory storage of the ephemeral SSH private key.")
+
+(defvar tnr-llama--ephemeral-key-file nil
+  "Path to the temporary file containing the SSH private key, managed automatically.")
 
 (defvar tnr-llama--tunnel-process nil
   "Stores the active SSH tunnel process so it can be managed and killed.")
@@ -108,6 +104,24 @@ If nil, no --ssh-key argument is passed to 'tnr create'."
   "Tracks the background launch state. Can be 'server or 'llama.")
 
 ;;; Internal Helper Functions
+
+(defun tnr-llama--get-key-file ()
+  "Return the path to the temporary key file, creating it if necessary."
+  (when tnr-llama--ephemeral-key
+    (unless (and tnr-llama--ephemeral-key-file
+                 (file-exists-p tnr-llama--ephemeral-key-file))
+      (setq tnr-llama--ephemeral-key-file (make-temp-file "tnr-key-"))
+      (set-file-modes tnr-llama--ephemeral-key-file #o600)
+      (with-temp-file tnr-llama--ephemeral-key-file
+        (insert tnr-llama--ephemeral-key)))
+    tnr-llama--ephemeral-key-file))
+
+(defun tnr-llama--cleanup-key-file ()
+  "Delete the temporary key file if it exists."
+  (when (and tnr-llama--ephemeral-key-file
+             (file-exists-p tnr-llama--ephemeral-key-file))
+    (delete-file tnr-llama--ephemeral-key-file)
+    (setq tnr-llama--ephemeral-key-file nil)))
 
 (defun tnr-llama--get-servers ()
   "Fetch the status of servers using 'tnr status --json' and return a list of alists
@@ -160,9 +174,10 @@ Stage 2 ('llama): Checks if /tmp/llama.ready exists on the remote server."
                   (tnr-llama-destroy))
               
               (message "tnr-llama: Server is RUNNING! Executing script and tunneling...")
-              (let* ((key-arg (if tnr-llama-ssh-key (format "-i %s " tnr-llama-ssh-key) ""))
-                     (ssh-cmd (format "ssh -p %s %s-o StrictHostKeyChecking=accept-new -o BatchMode=yes %s@%s 'nohup %s %d > /dev/null 2>&1 &'"
-                                      ssh-port key-arg tnr-llama-ssh-user ip tnr-llama-remote-script tnr-llama-idle-grace))
+              (let* ((key-file (tnr-llama--get-key-file))
+                     (key-arg (if key-file (format "-i %s " key-file) ""))
+                     (ssh-cmd (format "ssh -p %s %s-o StrictHostKeyChecking=accept-new -o BatchMode=yes %s@%s 'nohup %s %d %d %s </dev/null > /dev/null 2>&1 &'"
+                                      ssh-port key-arg tnr-llama-ssh-user ip tnr-llama-remote-script tnr-llama-idle-grace tnr-llama-port tnr-llama-snapshot))
                      (ssh-exit-code (shell-command ssh-cmd)))
                 
                 (if (/= ssh-exit-code 0)
@@ -176,8 +191,8 @@ Stage 2 ('llama): Checks if /tmp/llama.ready exists on the remote server."
                   (let ((ssh-args (delq nil 
                                         (list "ssh" "-p" (format "%s" ssh-port) "-N" "-L" (format "%d:localhost:%d" tnr-llama-port tnr-llama-port)
                                               "-o" "StrictHostKeyChecking=accept-new" "-o" "BatchMode=yes"
-                                              (when tnr-llama-ssh-key "-i")
-                                              (when tnr-llama-ssh-key (expand-file-name tnr-llama-ssh-key))
+                                              (when key-file "-i")
+                                              (when key-file key-file)
                                               (format "%s@%s" tnr-llama-ssh-user ip)))))
                     (setq tnr-llama--tunnel-process (apply #'start-process "tnr-llama-tunnel" "*tnr-llama-tunnel*" ssh-args)))
                   
@@ -187,10 +202,11 @@ Stage 2 ('llama): Checks if /tmp/llama.ready exists on the remote server."
 
            ;; STAGE 2: Wait for the lockfile
            ((eq tnr-llama--polling-state 'llama)
-            (let* ((key-arg (if tnr-llama-ssh-key (format "-i %s " tnr-llama-ssh-key) ""))
+            (let* ((key-file (tnr-llama--get-key-file))
+                   (key-arg (if key-file (format "-i %s " key-file) ""))
                    (ssh-test-cmd (format "ssh -p %s %s-o StrictHostKeyChecking=accept-new -o BatchMode=yes %s@%s 'test -f /tmp/llama.ready'"
                                          ssh-port key-arg tnr-llama-ssh-user ip))
-                   (ssh-exit-code (shell-command ssh-test-cmd)))
+                   (ssh-exit-code (call-process-shell-command ssh-test-cmd nil nil nil)))
               
               ;; `test -f` returns 0 if the file exists, 1 if it doesn't
               (when (= ssh-exit-code 0)
@@ -237,17 +253,18 @@ Useful for debugging script issues without redeploying the server."
             (message "tnr-llama: Attempting to restart script '%s' on %s:%s..." tnr-llama-remote-script ip ssh-port)
             (let* ((script-name (file-name-nondirectory tnr-llama-remote-script))
                    (safe-pkill-name (concat "[" (substring script-name 0 1) "]" (substring script-name 1)))
-                   (key-arg (if tnr-llama-ssh-key (format "-i %s " tnr-llama-ssh-key) ""))
+                   (key-file (tnr-llama--get-key-file))
+                   (key-arg (if key-file (format "-i %s " key-file) ""))
                    (ssh-base (format "ssh -p %s %s-o StrictHostKeyChecking=accept-new -o BatchMode=yes %s@%s" 
                                      ssh-port key-arg tnr-llama-ssh-user ip))
                    ;; Kills supervisor, kills llama-server, and deletes the lock file
                    (ssh-kill-cmd (format "%s 'pkill -f \"%s\" || true; pkill -f \"[l]lama-server\" || true; rm -f /tmp/llama.ready'" 
                                          ssh-base safe-pkill-name))
                    ;; Pass the tnr-llama-idle-grace argument when restarting
-                   (ssh-start-cmd (format "%s 'nohup %s %d </dev/null > /dev/null 2>&1 &' 2>&1" ssh-base tnr-llama-remote-script tnr-llama-idle-grace)))
+                   (ssh-start-cmd (format "%s 'nohup %s %d %d %s </dev/null > /dev/null 2>&1 &' 2>&1" ssh-base tnr-llama-remote-script tnr-llama-idle-grace tnr-llama-port tnr-llama-snapshot)))
               
               (message "tnr-llama: Stopping existing script and llama...")
-              (shell-command ssh-kill-cmd)
+              (call-process-shell-command ssh-kill-cmd nil nil nil)
               
               (message "tnr-llama: Starting script...")
               (with-temp-buffer
@@ -273,29 +290,33 @@ and establishes an SSH tunnel."
     (if existing
         (message "tnr-llama: Server already exists with status: %s" (alist-get 'status existing))
       (message "tnr-llama: Launching server...")
-      (let* ((cmd-base (format "%s create --mode %s --gpu %s --num-gpus %d --vcpus %d --primary-disk %d --ephemeral-disk %d --snapshot %s"
-                               tnr-llama-bin-path
-                               tnr-llama-mode
-                               tnr-llama-gpu
-                               tnr-llama-num-gpus
-                               tnr-llama-vcpus
-                               tnr-llama-primary-disk
-                               tnr-llama-ephemeral-disk
-                               tnr-llama-snapshot))
-             (cmd (if tnr-llama-ssh-id
-                      (format "%s --ssh-key %s" cmd-base tnr-llama-ssh-id)
-                    cmd-base)))
+      (let ((cmd (format "%s create --mode %s --gpu %s --num-gpus %d --vcpus %d --primary-disk %d --ephemeral-disk %d --snapshot %s --json 2>/dev/null"
+                         tnr-llama-bin-path
+                         tnr-llama-mode
+                         tnr-llama-gpu
+                         tnr-llama-num-gpus
+                         tnr-llama-vcpus
+                         tnr-llama-primary-disk
+                         tnr-llama-ephemeral-disk
+                         tnr-llama-snapshot)))
         
         (message "tnr-llama: Running command -> %s" cmd)
         
-        (let ((exit-code (shell-command cmd)))
-          (if (/= exit-code 0)
-              (message "tnr-llama: Error - 'tnr create' failed with exit code %d. Aborting launch." exit-code)
-            
-            (tnr-llama--stop-polling) 
-            (setq tnr-llama--polling-state 'server)
-            (setq tnr-llama--poll-timer (run-with-timer 5 5 #'tnr-llama--check-and-finish-setup))
-            (message "tnr-llama: Launch initiated. Polling status in the background...")))))))
+        (let ((output (shell-command-to-string cmd)))
+          (condition-case err
+              (let* ((json-object-type 'alist)
+                     (json-array-type 'list)
+                     (data (json-read-from-string output))
+                     (key (alist-get 'key data)))
+                (if (not key)
+                    (message "tnr-llama: Error - Failed to extract SSH key. Output was: %s" output)
+                  (setq tnr-llama--ephemeral-key key)
+                  (tnr-llama--stop-polling)
+                  (setq tnr-llama--polling-state 'server)
+                  (setq tnr-llama--poll-timer (run-with-timer 5 5 #'tnr-llama--check-and-finish-setup))
+                  (message "tnr-llama: Launch initiated. Polling status in the background...")))
+            (error
+             (message "tnr-llama: Error parsing JSON from launch command: %s" err))))))))
 
 ;;;###autoload
 (defun tnr-llama-reconnect ()
@@ -320,12 +341,13 @@ Useful if Emacs was restarted but the remote server is still running."
               (kill-process tnr-llama--tunnel-process))
             
             ;; Start a fresh tunnel
-            (let ((ssh-args (delq nil 
-                                  (list "ssh" "-p" (format "%s" ssh-port) "-N" "-L" (format "%d:localhost:%d" tnr-llama-port tnr-llama-port)
-                                        "-o" "StrictHostKeyChecking=accept-new" "-o" "BatchMode=yes"
-                                        (when tnr-llama-ssh-key "-i")
-                                        (when tnr-llama-ssh-key (expand-file-name tnr-llama-ssh-key))
-                                        (format "%s@%s" tnr-llama-ssh-user ip)))))
+            (let* ((key-file (tnr-llama--get-key-file))
+                   (ssh-args (delq nil
+                                   (list "ssh" "-p" (format "%s" ssh-port) "-N" "-L" (format "%d:localhost:%d" tnr-llama-port tnr-llama-port)
+                                         "-o" "StrictHostKeyChecking=accept-new" "-o" "BatchMode=yes"
+                                         (when key-file "-i")
+                                         (when key-file key-file)
+                                         (format "%s@%s" tnr-llama-ssh-user ip)))))
               (setq tnr-llama--tunnel-process (apply #'start-process "tnr-llama-tunnel" "*tnr-llama-tunnel*" ssh-args))
               (message "tnr-llama: Tunnel reconnected on port %d!" tnr-llama-port))))))))
 
@@ -340,6 +362,9 @@ Useful if Emacs was restarted but the remote server is still running."
     (message "tnr-llama: Closing SSH tunnel...")
     (kill-process tnr-llama--tunnel-process)
     (setq tnr-llama--tunnel-process nil))
+
+  (tnr-llama--cleanup-key-file)
+  (setq tnr-llama--ephemeral-key nil)
 
   (let ((servers (tnr-llama--get-servers)))
     (if (null servers)

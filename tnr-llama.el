@@ -1,4 +1,4 @@
-;;; tnr-llama.el --- Manage tnr-based LLaMA servers -*- lexical-binding: t; -*-
+;;; tnr-llama.el --- Manage tnr-based LLaMA servers -*- lexical-binding: t -*-
 
 ;; Copyright (C) 2026 Caleb L. Power <cpower@axonibyte.com>
 ;;
@@ -16,7 +16,7 @@
 ;; along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 ;; Author: Axonibyte Innovations, LLC
-;; Version: 0.1.1
+;; Version: 0.1.2
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: tools, processes, external
 ;; URL: https://github.com/yourusername/tnr-llama
@@ -39,7 +39,7 @@
 ;;; Customizable Variables
 
 (defcustom tnr-llama-bin-path "tnr"
-  "Path to the tnr executable. Can be an absolute path or just 'tnr'."
+  "Path to the tnr executable. Can be an absolute path or just \"tnr\"."
   :type 'string)
 
 (defcustom tnr-llama-mode "prototyping"
@@ -83,7 +83,7 @@
   :type 'string)
 
 (defcustom tnr-llama-idle-grace 600
-  "Number of seconds the LLaMA server can be idle before the supervisor terminates it."
+  "Number of seconds the LLaMA server can be idle before termination."
   :type 'integer)
 
 ;;; Internal Variables
@@ -92,7 +92,7 @@
   "In-memory storage of the ephemeral SSH private key.")
 
 (defvar tnr-llama--ephemeral-key-file nil
-  "Path to the temporary file containing the SSH private key, managed automatically.")
+  "Path to the temporary file containing the SSH private key.")
 
 (defvar tnr-llama--tunnel-process nil
   "Stores the active SSH tunnel process so it can be managed and killed.")
@@ -101,7 +101,7 @@
   "Timer object for background status polling.")
 
 (defvar tnr-llama--polling-state nil
-  "Tracks the background launch state. Can be 'server or 'llama.")
+  "Tracks the background launch state. Can be `server' or `llama'.")
 
 ;;; Internal Helper Functions
 
@@ -124,8 +124,8 @@
     (setq tnr-llama--ephemeral-key-file nil)))
 
 (defun tnr-llama--get-servers ()
-  "Fetch the status of servers using 'tnr status --json' and return a list of alists
-for any server matching `tnr-llama-snapshot`."
+  "Fetch the status of servers using \"tnr status --json\".
+Returns a list of alists for any server matching `tnr-llama-snapshot'."
   (let* ((cmd (format "%s status --json 2>/dev/null" tnr-llama-bin-path))
          (json-string (string-trim (shell-command-to-string cmd))))
     (if (or (string-empty-p json-string)
@@ -147,9 +147,9 @@ for any server matching `tnr-llama-snapshot`."
     (setq tnr-llama--poll-timer nil)))
 
 (defun tnr-llama--check-and-finish-setup ()
-  "Fired by timer. Operates in two stages based on `tnr-llama--polling-state`:
-Stage 1 ('server): Checks if server is RUNNING, executes script, builds tunnel.
-Stage 2 ('llama): Checks if /tmp/llama.ready exists on the remote server."
+  "Fired by timer. Operates in two stages based on `tnr-llama--polling-state':
+Stage 1 (`server'): Checks if server is RUNNING, executes script, builds tunnel.
+Stage 2 (`llama'): Checks if /tmp/llama.ready exists on the remote server."
   (let* ((servers (tnr-llama--get-servers))
          (srv (car servers)))
     (when srv
@@ -303,20 +303,24 @@ and establishes an SSH tunnel."
         (message "tnr-llama: Running command -> %s" cmd)
         
         (let ((output (shell-command-to-string cmd)))
-          (condition-case err
-              (let* ((json-object-type 'alist)
-                     (json-array-type 'list)
-                     (data (json-read-from-string output))
-                     (key (alist-get 'key data)))
-                (if (not key)
-                    (message "tnr-llama: Error - Failed to extract SSH key. Output was: %s" output)
-                  (setq tnr-llama--ephemeral-key key)
-                  (tnr-llama--stop-polling)
-                  (setq tnr-llama--polling-state 'server)
-                  (setq tnr-llama--poll-timer (run-with-timer 5 5 #'tnr-llama--check-and-finish-setup))
-                  (message "tnr-llama: Launch initiated. Polling status in the background...")))
-            (error
-             (message "tnr-llama: Error parsing JSON from launch command: %s" err))))))))
+          (let ((json-start (string-match-p "{" output)))
+            (if (not json-start)
+                (message "tnr-llama: Error - No JSON payload found. Output was: %s" output)
+              (condition-case err
+                  (let* ((json-object-type 'alist)
+                         (json-array-type 'list)
+                         (json-string (substring output json-start))
+                         (data (json-read-from-string json-string))
+                         (key (alist-get 'key data)))
+                    (if (not key)
+                        (message "tnr-llama: Error - Failed to extract SSH key. Output was: %s" output)
+                      (setq tnr-llama--ephemeral-key key)
+                      (tnr-llama--stop-polling)
+                      (setq tnr-llama--polling-state 'server)
+                      (setq tnr-llama--poll-timer (run-with-timer 5 5 #'tnr-llama--check-and-finish-setup))
+                      (message "tnr-llama: Launch initiated. Polling status in the background...")))
+                (error
+                 (message "tnr-llama: Error parsing JSON from launch command: %s" err))))))))))
 
 ;;;###autoload
 (defun tnr-llama-reconnect ()
@@ -353,7 +357,8 @@ Useful if Emacs was restarted but the remote server is still running."
 
 ;;;###autoload
 (defun tnr-llama-destroy ()
-  "Destroy all tnr-llama servers matching the configured snapshot and kill the tunnel."
+  "Destroy all TNR servers matching the configured snapshot.
+Also kills the associated SSH tunnel."
   (interactive)
   (tnr-llama--stop-polling)
   (setq tnr-llama--polling-state nil)
